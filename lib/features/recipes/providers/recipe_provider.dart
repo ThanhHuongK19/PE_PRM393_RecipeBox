@@ -105,8 +105,9 @@ class RecipeProvider extends ChangeNotifier {
   }
 
   Future<Recipe> addRecipe(Recipe recipe) async {
+    final generation = _listenerGeneration;
     final saved = await _repository.addRecipe(recipe);
-    if (_disposed) return saved;
+    if (_disposed || generation != _listenerGeneration) return saved;
     _insertRecipe(saved);
     _operationError = null;
     _notify();
@@ -114,9 +115,10 @@ class RecipeProvider extends ChangeNotifier {
   }
 
   Future<Recipe> updateRecipe(Recipe recipe) async {
+    final generation = _listenerGeneration;
     final previousId = recipe.id;
     final saved = await _repository.updateRecipe(recipe);
-    if (_disposed) return saved;
+    if (_disposed || generation != _listenerGeneration) return saved;
     final updated = _recipes.where((item) => item.id != previousId).toList()
       ..removeWhere((item) => item.id == saved.id)
       ..add(saved);
@@ -127,8 +129,9 @@ class RecipeProvider extends ChangeNotifier {
   }
 
   Future<void> deleteRecipe(String recipeId) async {
+    final generation = _listenerGeneration;
     await _repository.deleteRecipe(recipeId);
-    if (_disposed) return;
+    if (_disposed || generation != _listenerGeneration) return;
     _recipes = List.unmodifiable(
       _recipes.where((recipe) => recipe.id != recipeId),
     );
@@ -180,19 +183,34 @@ class RecipeProvider extends ChangeNotifier {
     _listenerGeneration++;
     final subscription = _subscription;
     _subscription = null;
-    if (subscription == null) return;
-    final cancelFuture = subscription.cancel();
-    _cancelFuture = cancelFuture;
-    unawaited(
-      cancelFuture.whenComplete(() {
-        if (identical(_cancelFuture, cancelFuture)) _cancelFuture = null;
-      }),
-    );
+    if (subscription != null) {
+      final cancelFuture = subscription.cancel();
+      _cancelFuture = cancelFuture;
+      unawaited(
+        cancelFuture.whenComplete(() {
+          if (identical(_cancelFuture, cancelFuture)) _cancelFuture = null;
+        }),
+      );
+    }
+
+    final hadSessionData =
+        _recipes.isNotEmpty ||
+        _favoriteUpdates.isNotEmpty ||
+        _isLoading ||
+        _errorMessage != null ||
+        _operationError != null;
+    _recipes = const [];
+    _favoriteUpdates.clear();
+    _isLoading = false;
+    _errorMessage = null;
+    _operationError = null;
+    if (hadSessionData) _notify();
   }
 
   Future<void> toggleFavorite(Recipe recipe) async {
     if (_disposed) return;
     if (!_favoriteUpdates.add(recipe.id)) return;
+    final generation = _listenerGeneration;
 
     final previousFavorite = recipe.favorite;
     _operationError = null;
@@ -201,10 +219,10 @@ class RecipeProvider extends ChangeNotifier {
 
     try {
       final saved = await _repository.toggleFavorite(recipe.id);
-      if (_disposed) return;
+      if (_disposed || generation != _listenerGeneration) return;
       _replaceRecipe(saved);
     } catch (error) {
-      if (_disposed) return;
+      if (_disposed || generation != _listenerGeneration) return;
       final current = _recipes.where((item) => item.id == recipe.id);
       if (current.isNotEmpty) {
         _replaceRecipe(current.first.copyWith(favorite: previousFavorite));

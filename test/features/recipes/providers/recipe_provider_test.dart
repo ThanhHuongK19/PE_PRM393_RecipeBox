@@ -109,6 +109,29 @@ void main() {
     await provider.deleteRecipe('new-id');
     expect(provider.recipes.map((recipe) => recipe.id), ['first']);
   });
+
+  test('stopping a user session clears cached recipes and ignores late writes', () async {
+    service.recipes = [
+      _recipe('private', 'Private recipe', 'Dinner', 'Easy', 25, false),
+    ];
+    await _loadProvider(provider);
+
+    final pendingWrite = Completer<Recipe>();
+    service.pendingAdd = pendingWrite;
+    final addFuture = provider.addRecipe(
+      _recipe('', 'Late recipe', 'Lunch', 'Medium', 20, false),
+    );
+
+    provider.stopListening();
+    expect(provider.recipes, isEmpty);
+    expect(provider.summary.recipeCount, 0);
+
+    pendingWrite.complete(
+      _recipe('late', 'Late recipe', 'Lunch', 'Medium', 20, false),
+    );
+    await addFuture;
+    expect(provider.recipes, isEmpty);
+  });
 }
 
 Future<void> _loadProvider(RecipeProvider provider) async {
@@ -144,6 +167,7 @@ Recipe _recipe(
 
 class _MemoryRecipeService implements RecipeService {
   List<Recipe> recipes = [];
+  Completer<Recipe>? pendingAdd;
 
   @override
   Stream<List<Recipe>> watchRecipes() => Stream.value(recipes);
@@ -154,6 +178,8 @@ class _MemoryRecipeService implements RecipeService {
   @override
   Future<Recipe> addRecipe(Recipe recipe) async {
     final saved = recipe.copyWith(id: 'new-id', userId: 'test-user');
+    final pending = pendingAdd;
+    if (pending != null) return pending.future;
     recipes = [...recipes, saved];
     return saved;
   }
