@@ -1,0 +1,122 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function recipeNameClaimId(name) {
+      return name.trim().lower()
+        .replace('%', '%25')
+        .replace('/', '%2F');
+    }
+
+    function recipePath(recipeId) {
+      return /databases/$(database)/documents/recipes/$(recipeId);
+    }
+
+    function claimPath(uid, name) {
+      let claimId = recipeNameClaimId(name);
+      return /databases/$(database)/documents/users/$(uid)/recipeNameClaims/$(claimId);
+    }
+
+    function hasMatchingClaim(uid, name, recipeId) {
+      let path = claimPath(uid, name);
+      return existsAfter(path)
+        && getAfter(path).data.userId == uid
+        && getAfter(path).data.normalizedName == name.trim().lower()
+        && getAfter(path).data.recipeId == recipeId;
+    }
+
+    function validRecipe(recipeId, data) {
+      return data.keys().hasAll([
+          'id', 'userId', 'name', 'category', 'difficulty', 'cookTime',
+          'favorite', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'userId', 'name', 'category', 'difficulty', 'cookTime',
+          'servings', 'favorite', 'notes', 'createdAt'
+        ])
+        && data.id is string
+        && data.id == recipeId
+        && data.userId is string
+        && data.userId == request.auth.uid
+        && data.name is string
+        && data.name.trim().size() > 0
+        && data.name.size() <= 80
+        && data.category is string
+        && data.category in ['Breakfast', 'Lunch', 'Dinner', 'Dessert']
+        && data.difficulty is string
+        && data.difficulty in ['Easy', 'Medium', 'Hard']
+        && data.cookTime is int
+        && data.cookTime >= 1
+        && data.cookTime <= 600
+        && data.favorite is bool
+        && data.createdAt is timestamp
+        && (!data.keys().hasAny(['servings'])
+          || (data.servings is int && data.servings >= 1 && data.servings <= 20))
+        && (!data.keys().hasAny(['notes'])
+          || (data.notes is string && data.notes.size() <= 300));
+    }
+
+    function validNameClaim(uid, claimId, data) {
+      return data.keys().hasAll(['userId', 'normalizedName', 'recipeId'])
+        && data.keys().hasOnly(['userId', 'normalizedName', 'recipeId'])
+        && uid == request.auth.uid
+        && data.userId is string
+        && data.userId == request.auth.uid
+        && data.normalizedName is string
+        && data.normalizedName == data.normalizedName.trim().lower()
+        && claimId == recipeNameClaimId(data.normalizedName)
+        && data.recipeId is string
+        && existsAfter(recipePath(data.recipeId))
+        && getAfter(recipePath(data.recipeId)).data.userId == request.auth.uid
+        && getAfter(recipePath(data.recipeId)).data.name.trim().lower() == data.normalizedName
+        && getAfter(recipePath(data.recipeId)).data.id == data.recipeId;
+    }
+
+    match /recipes/{recipeId} {
+      allow get, list: if signedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if signedIn()
+        && validRecipe(recipeId, request.resource.data)
+        && hasMatchingClaim(
+          request.auth.uid,
+          request.resource.data.name,
+          recipeId
+        );
+
+      allow update: if signedIn()
+        && resource.data.userId == request.auth.uid
+        && validRecipe(recipeId, request.resource.data)
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && hasMatchingClaim(
+          request.auth.uid,
+          request.resource.data.name,
+          recipeId
+        );
+
+      allow delete: if signedIn()
+        && resource.data.userId == request.auth.uid
+        && !existsAfter(claimPath(request.auth.uid, resource.data.name));
+    }
+
+    match /users/{uid}/recipeNameClaims/{claimId} {
+      allow get: if signedIn() && uid == request.auth.uid;
+      allow list: if false;
+
+      allow create: if signedIn()
+        && validNameClaim(uid, claimId, request.resource.data);
+
+      // Claims are immutable; a rename releases the old claim and creates a new one.
+      allow update: if false;
+
+      allow delete: if signedIn()
+        && resource.data.userId == request.auth.uid
+        && (!existsAfter(recipePath(resource.data.recipeId))
+          || getAfter(recipePath(resource.data.recipeId)).data.name.trim().lower()
+            != resource.data.normalizedName);
+    }
+  }
+}
